@@ -126,9 +126,35 @@ macro_rules! brk {
 
 // Timer with four output channels 16 Bit Timer
 macro_rules! pwm_4_channels {
-    ($($TIMX:ident: ($timX:ident, $timXen:ident, $timXrst:ident, $apbenr:ident, $apbrstr:ident),)+) => {
+    ($($TIMX:ident: ($timX:ident, $timXen:ident, $timXrst:ident, $apbenr:ident, $apbrstr:ident): $PWMX:ident,)+) => {
         $(
-            pub fn $timX<P, PINS, T>(tim: $TIMX, _pins: PINS, rcc: &mut Rcc, freq: T) -> PINS::Channels
+            pub struct $PWMX<CS> {
+                tim: $TIMX,
+                channels: CS,
+            }
+
+            impl<CS> $PWMX<CS> {
+                pub fn set_freq(&mut self, rcc: &mut Rcc, freq: impl Into<Hertz>) {
+                    // If pclk is prescaled from hclk, the frequency fed into the timers is doubled
+                    let tclk = if rcc.clocks.hclk().0 == rcc.clocks.pclk().0 {
+                        rcc.clocks.pclk().0
+                    } else {
+                        rcc.clocks.pclk().0 * 2
+                    };
+                    let ticks = tclk / freq.into().0;
+
+                    let psc = u16((ticks - 1) / (1 << 16)).unwrap();
+                    self.tim.psc.write(|w| w.psc().bits(psc) );
+                    let arr = u16(ticks / u32(psc + 1)).unwrap();
+                    self.tim.arr.write(|w| unsafe { w.bits(u32(arr)) });
+                }
+
+                pub fn channels_mut(&mut self) -> &mut CS {
+                    &mut self.channels
+                }
+            }
+
+            pub fn $timX<P, PINS, T>(tim: $TIMX, _pins: PINS, rcc: &mut Rcc, freq: T) -> $PWMX<PINS::Channels>
             where
                 PINS: Pins<$TIMX, P>,
                 T: Into<Hertz>,
@@ -187,8 +213,11 @@ macro_rules! pwm_4_channels {
                         .cen()
                         .set_bit()
                 );
-                //NOTE(unsafe) `PINS::Channels` is a ZST
-                unsafe { MaybeUninit::uninit().assume_init() }
+                $PWMX {
+                    tim,
+                    //NOTE(unsafe) `PINS::Channels` is a ZST
+                    channels: unsafe { MaybeUninit::uninit().assume_init() }
+                }
             }
 
             impl hal::PwmPin for PwmChannels<$TIMX, C1> {
@@ -906,7 +935,7 @@ macro_rules! pwm_1_channel_with_complementary_outputs {
 
 use crate::pac::*;
 
-pwm_4_channels!(TIM3: (tim3, tim3en, tim3rst, apb1enr, apb1rstr),);
+pwm_4_channels!(TIM3: (tim3, tim3en, tim3rst, apb1enr, apb1rstr): PWM3,);
 
 pwm_4_channels_with_3_complementary_outputs!(TIM1: (tim1, tim1en, tim1rst, apb2enr, apb2rstr),);
 pwm_1_channel!(TIM14: (tim14, tim14en, tim14rst, apb1enr, apb1rstr),);
